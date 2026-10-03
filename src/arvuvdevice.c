@@ -238,6 +238,7 @@ _send_cmd_and_receive_ack (ArvUvDevice *uv_device, ArvUvcpCommand command,
 	const char *operation;
 	size_t packet_size;
 	size_t ack_size;
+	size_t ack_buffer_size;
 	unsigned n_tries = 0;
 	gboolean success = FALSE;
 	ArvUvcpStatus status = ARV_UVCP_STATUS_SUCCESS;
@@ -292,7 +293,9 @@ _send_cmd_and_receive_ack (ArvUvDevice *uv_device, ArvUvcpCommand command,
 			g_assert_not_reached ();
 	}
 
-	ack_packet = g_malloc (ack_size);
+	/* A pending acknowledge may be larger than the acknowledge of a short read */
+	ack_buffer_size = MAX (ack_size, sizeof (ArvUvcpPendingAck));
+	ack_packet = g_malloc (ack_buffer_size);
 
 	g_mutex_lock (&priv->transfer_mutex);
 
@@ -331,7 +334,7 @@ _send_cmd_and_receive_ack (ArvUvDevice *uv_device, ArvUvcpCommand command,
 				success = success && arv_uv_device_bulk_transfer (uv_device,
 										  ARV_UV_ENDPOINT_CONTROL,
 										  LIBUSB_ENDPOINT_IN,
-										  ack_packet, ack_size,
+										  ack_packet, ack_buffer_size,
 										  &transferred, timeout_ms,
 										  &local_error);
 
@@ -345,7 +348,9 @@ _send_cmd_and_receive_ack (ArvUvDevice *uv_device, ArvUvcpCommand command,
 					ack_command = arv_uvcp_packet_get_command (ack_packet);
 					packet_id = arv_uvcp_packet_get_packet_id (ack_packet);
 
-					if (ack_command == ARV_UVCP_COMMAND_PENDING_ACK) {
+					if (ack_command == ARV_UVCP_COMMAND_PENDING_ACK &&
+					    packet_id == priv->packet_id &&
+					    transferred >= sizeof (ArvUvcpPendingAck)) {
 						gint64 pending_ack_timeout_ms;
 						pending_ack = TRUE;
 						expected_answer = FALSE;
@@ -358,7 +363,7 @@ _send_cmd_and_receive_ack (ArvUvDevice *uv_device, ArvUvcpCommand command,
                                                                   "pending ack timeout = %" G_GINT64_FORMAT,
                                                                   operation, n_tries + 1, ARV_UV_DEVICE_N_TRIES_MAX,
                                                                   pending_ack_timeout_ms);
-					} if (status != ARV_UVCP_STATUS_SUCCESS) {
+					} else if (status != ARV_UVCP_STATUS_SUCCESS) {
 						expected_answer = ack_command == expected_ack_command &&
 							packet_id == priv->packet_id;
 						if (!expected_answer) {
